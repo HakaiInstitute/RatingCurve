@@ -9,4 +9,4 @@ This repository includes two Rmarkdown scripts (sourcing multiple R scripts) tha
 
 **Rating_curve.Rmd** plots the rating curve using LOESS regression, extrapolates the curve to maximum and minimum stage recorded and calculates Confidence Intervals (method by Coxon et al., 2015).
 
-See **RatingCurve_manual.pptx** for an explanantion and tutorial on the RatingCurve scripts. 
+Download **RatingCurve_manual.pptx** for an explanantion and tutorial on the RatingCurve scripts. 
