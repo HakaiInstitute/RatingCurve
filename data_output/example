@@ -1,0 +1,4 @@
+Data output is saved here.
+Rating curve lookup table: 'WTSxxxratingcurve_vx.csv'
+Hardcopy of stage-discharge data: : 'WTSxxxratingcurve_vx.csv'
+File to check for NaN values during CI plotting: 'RatingCI.csv'
