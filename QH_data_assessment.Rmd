@@ -1,0 +1,162 @@
+---
+title: "Assess stage-discharge data"
+author: "Maartje Korver"
+date: "May 13, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+
+# Explanation of code
+## Action required
+
+# Install and/or load packages
+#install.packages('ggplot2')
+#install.packages('plotly')
+#install.packages('tidyverse')
+#install.packages('googlesheets')
+
+library(ggplot2)
+library(plotly)
+library(tidyverse)
+library(googlesheets)
+
+## Set working directory
+setwd("C:/Users/Watersheds/Documents/RProjects/Rating_curves/Test")
+
+```
+
+```{r load_data, include = FALSE}
+
+## Load stage-discharge data from googlesheet. Adapt sheet title (gs_title) and tab name (gs_read).
+HQ <- gs_title('Metadata Rating curve 844')
+HQ <- gs_read(HQ, ws = "Rating curve v4")
+
+# Add column with absolute Q uncertainty. 
+# Filter measurements that are indicated as 'Y' under 'Final_rating_curve'
+HQ <- HQ %>% 
+  mutate(Q_abs_unc = Q_rel_unc/100 * Q_meas) %>% 
+  filter(Final_rating_curve == 'Y')
+
+## Load the rating curve lookup table of the previous rating curve version. Adapt sheet title (gs_title) and tab name (gs_read). 
+ratingcurve_old <- gs_title('Rating curves v3 - H-Q lookup tables')
+ratingcurve_old <- gs_read(ratingcurve_old, ws = "WTS844")
+
+# Create dataframes filtered for old or new storm events
+HQ_newstorm <- HQ %>% 
+  filter(Old_new == 'New')
+HQ_oldstorm <- HQ %>% 
+  filter(Old_new == 'Old')
+
+# Create dataframes calculating residuals of Q_meas and Q_model
+resid_new <- HQ_newstorm %>% 
+  mutate(Stage_avg = round(Stage_avg, digits = 1)) %>% 
+  select(Stage_avg, Q_meas)
+resid_old <- HQ_oldstorm %>% 
+  mutate(Stage_avg = round(Stage_avg, digits = 1)) %>% 
+  select(Stage_avg, Q_meas)
+
+resid_new <- merge(resid_new, ratingcurve_old, by.x = 'Stage_avg')
+resid_old <- merge(resid_old, ratingcurve_old, by.x = 'Stage_avg')
+
+resid_new <- resid_new %>% 
+  mutate(resid_new = Q_meas - Q_model)
+resid_old <- resid_old %>% 
+  mutate(resid_old = Q_meas - Q_model)
+
+```
+
+### Watershed 844 -- version 4
+
+_The plots in this document are for assessment of stage-discharge measurements and identification of rating curve shifts. For detailed measurement information see [Metadata Rating Curve 844](https://docs.google.com/spreadsheets/d/1IAcIKq5dXwEm2YEpWBXbyO0UyqnqsVD6Wy9TYU2K2cU/edit#gid=0)_
+
+* `r nrow(HQ_newstorm)` new discharge measurements were taken since the last rating curve update, from `r (max(HQ_newstorm$Event_no)-min(HQ_newstorm$Event_no)+1)` different storm events.
+* Total number of discharge measurements = `r nrow(HQ)`
+
+
+#### Overview
+
+```{r new_vs_old, include=TRUE}
+
+ggplot() + 
+  geom_line(data = ratingcurve_old, aes(x = Stage_avg, y = Q_model)) + 
+  geom_point(data = HQ, aes(x = Stage_avg, y = Q_meas, fill = Old_new), shape = 21, size = 2) + 
+  theme_bw() + scale_x_continuous(minor_breaks = seq(0, 200, 10)) + facet_grid(Old_new ~ .) + guides(fill = "none") + xlab("Stage [cm]") + ylab("Discharge [m3/s]")
+
+```
+
+#### Zoom plots {.tabset}
+
+##### New vs. old
+```{r new_vs_old_2, include=TRUE}
+
+ggplotly(ggplot() + 
+  geom_line(data = ratingcurve_old, aes(x = Stage_avg, y = Q_model)) + 
+  geom_pointrange(data = HQ, aes(x = Stage_avg, y = Q_meas, ymin = Q_meas - Q_abs_unc, ymax = Q_meas + Q_abs_unc, color = Old_new, Label = ID), size = 1.5) + 
+  theme_bw() + xlab("Stage [cm]") + ylab("Discharge [m3/s]"))
+
+```
+
+##### Storm events
+```{r new_storm, include=TRUE}
+
+ggplotly(ggplot() + 
+  geom_line(data = ratingcurve_old, aes(x = Stage_avg, y = Q_model)) + 
+  geom_point(data = HQ_newstorm, aes(x = Stage_avg, y = Q_meas, fill = factor(Event_no), Label = ID), shape = 21, size = 2) + 
+  theme_bw() + xlab("Stage [cm]") + ylab("Discharge [m3/s]") + labs(fill = 'Storm event no.'))
+
+```
+
+##### Water Year
+```{r shifts, include=TRUE}
+
+ggplotly(ggplot() + 
+  geom_line(data = ratingcurve_old, aes(x = Stage_avg, y = Q_model)) + 
+  geom_point(data = HQ, aes(x = Stage_avg, y = Q_meas, fill = factor(WTY), Label = ID), shape = 21, size = 2) + 
+  theme_bw() + xlab("Stage [cm]") + ylab("Discharge [m3/s]") + labs(fill = 'WTY'))
+
+```
+
+##### Hysteresis
+```{r hysteresis, include=TRUE}
+
+ggplotly(ggplot() + 
+  geom_line(data = ratingcurve_old, aes(x = Stage_avg, y = Q_model)) + 
+  geom_point(data = HQ, aes(x = Stage_avg, y = Q_meas, fill = Stage_delta, Label = ID), shape = 21, size = 2) + 
+  theme_bw() + xlab("Stage [cm]") + ylab("Discharge [m3/s]") + labs(fill = 'Falling or rising limb'))
+
+```
+
+#### Did Rating curve shift? {.tabset}
+
+_To assess whether the rating curve has shifted (objectively), the residuals (Q_meas - Q_model) of the discharge measurements to the old rating curve model are assessed. If the mean of all residuals is larger then the mean of all absolute measurement uncertainties, a new shift in the rating curve should be considered._
+
+##### Old
+```{r resid_old, include = TRUE}
+cols <- c("Q_resid" = "black", "mean Q_abs_unc" = "grey","mean Q_resid" = "red")
+
+ggplot() + 
+  geom_line(data = resid_old, aes(x = Stage_avg, y = resid_old, color = "Q_resid")) +
+  geom_point(data = resid_old, aes(x = Stage_avg, y = resid_old, color = "Q_resid")) +
+  geom_hline(aes(yintercept = mean(HQ_oldstorm$Q_abs_unc), color = "mean Q_abs_unc"), size = 1, show.legend = TRUE) +
+  geom_hline(aes(yintercept = -mean(HQ_oldstorm$Q_abs_unc), color = "mean Q_abs_unc"), size = 1, show.legend = TRUE) + 
+  geom_hline(aes(yintercept = mean(resid_old$resid_old), color = "mean Q_resid"), size = 1, show.legend = TRUE) + 
+  theme_bw() + xlab("Stage [cm]") + ylab("residuals [m3/s]") + scale_color_manual(name = "", values = cols)
+
+```
+
+##### New
+```{r resid_new, include = TRUE}
+cols <- c("Q_resid" = "black", "mean Q_abs_unc" = "grey","mean Q_resid" = "red")
+
+ggplot() + 
+  geom_line(data = resid_new, aes(x = Stage_avg, y = resid_new, color = "Q_resid")) +
+  geom_point(data = resid_new, aes(x = Stage_avg, y = resid_new, color = "Q_resid")) +
+  geom_hline(aes(yintercept = mean(HQ_newstorm$Q_abs_unc), color = "mean Q_abs_unc"), size = 1, show.legend = TRUE) +
+  geom_hline(aes(yintercept = -mean(HQ_newstorm$Q_abs_unc), color = "mean Q_abs_unc"), size = 1, show.legend = TRUE) + 
+  geom_hline(aes(yintercept = mean(resid_new$resid_new), color = "mean Q_resid"), size = 1, show.legend = TRUE) + 
+  theme_bw() + xlab("Stage [cm]") + ylab("residuals [m3/s]") + scale_color_manual(name = "", values = cols)
+
+```
+

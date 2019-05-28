@@ -1,0 +1,332 @@
+---
+title: "Final rating curve"
+author: "Maartje Korver"
+date: "May 13, 2019"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+# Explanation of code
+## Action required
+
+# Install and/or load packages
+#install.packages('ggplot2')
+#install.packages('plotly')
+#install.packages('tidyverse')
+#install.packages('stats')
+#install.packages('googlesheets')
+#install.packages('readr')
+#install.packages('KScorrect')
+
+library(ggplot2)
+library(plotly)
+library(tidyverse)
+library(stats)
+library(googlesheets)
+library(readr)
+library(KScorrect)
+
+## Set working directory
+setwd("C:/Users/Watersheds/Documents/RProjects/Rating_curves/Test")
+
+# Read functions
+source("selectspan.R")
+source("interp1.R")
+source("interp2.R")
+source("HQ_unc.R")
+source("CI_model_input.R")
+source("CI.R")
+
+```
+
+```{r load_data, include=FALSE}
+
+## Load stage-discharge data from googlesheet. Adapt sheet title (gs_title) and tab name (gs_read).
+HQ <- gs_title('Metadata Rating curve 703')
+HQ <- gs_read(HQ, ws = "Rating curve v4")
+
+# Add column with absolute Q uncertainty. 
+# Filter measurements that are indicated as 'Y' under 'Final_rating_curve'
+HQ <- HQ %>% 
+  mutate(Q_abs_unc = Q_rel_unc/100 * Q_meas) %>% 
+  filter(Final_rating_curve == 'Y')
+
+## Separate dataframe into rc1, rc2 and rc3. 
+HQ_rc1 <- HQ %>% 
+  filter(Shift %in% c(1, 2.1, 3.1))
+HQ_rc2 <- HQ %>% 
+  filter(Shift %in% c(1, 2.2, 3.2))
+HQ_rc3 <- HQ %>% 
+  filter(Shift %in% c(1, 2.3, 3.1, 3.2))
+
+```
+
+### Watershed 703 -- version 4
+
+_This document outlines the final rating curve plotting process, the decisions that were made and the results_
+
+#### Conclusions drawn from Stage-discharge data assessment
+
+**Describe shifts**  
+Two shifts can be clearly identified: the data of 2017-2018 are shifted above a stage of 70 cm, and the data of 2018-2019 shifted again, back in the direction of the 2014-2017 data. 
+
+**Possible cause for shift**  
+The shifts are most likely caused by maintenance work on the PT sensor: on 2017-10-12 a new PT (SSN703US WtrLvl2) was installed on top of the old sensor (SSN703US WtrLvl1) which was recording noisy data and had to be replaced. The data of WtrLvl2 was offset by -1 cm to simulate the exact position of WtrLvl1. However, this is an estimation so a shift in the rating curve at that moment in time was to be expected. Additionally, the highest flows recorded to date happened on 2017-10-16, so this can also explain a shift in the rating curve. On 2018-05-05, a log jammed under the PT installation was removed, which caused a disposition of the PT. To correct for this, the offset of WtrLvl2 was increased by -2cm and a second shift in the rating curve can be explained by this offset.
+
+All WtrLvl2 stage data are automatically flagged and offset by -2cm on the sensor network, starting 2018-05-05. Caution should be taken that any new Stage-Discharge measurements also use the corrected, offsetted stage data.
+
+**Start date of shifts**  
+Shift1: 2017-10-12
+Shift2: 2018-05-05
+
+**Were data points omitted?**    
+Yes, this and that one
+
+**Other observations/comments**  
+
+
+#### Loess fit with visual span width selection
+
+Select the span width that does not overfit (span width too small) nor underfit (span width too large) the data. Different span widths can be chosen for different shifts.
+
+Span_a = 0.3  
+Span_b = 0.4  
+Span_c = 0.5  
+
+Span width chosen:   
+Rating curve 1 = **span_a**     
+Rating curve 2 = **span_b**  
+
+```{r define_span1, include = TRUE}
+
+# Define potential span widths
+Rating_rc1 <- selectspan(HQ_rc1,0.3,0.4,0.5)
+Rating_rc2 <- selectspan(HQ_rc2,0.3,0.4,0.5)
+#Rating_rc3 <- selectspan(HQ_rc3,0.3,0.4,0.5)
+
+ggplotly(ggplot() +
+  geom_pointrange(data = HQ_rc1, aes(x = Stage_avg, y = Q_meas, ymin = Q_meas - Q_abs_unc, ymax = Q_meas + Q_abs_unc, Label = ID), size = 1) +
+  geom_pointrange(data = HQ_rc2, aes(x = Stage_avg, y = Q_meas, ymin = Q_meas - Q_abs_unc, ymax = Q_meas + Q_abs_unc, Label = ID), size = 1) +
+  #geom_pointrange(data = HQ_rc3, aes(x = Stage_avg, y = Q_meas, ymin = Q_meas - Q_abs_unc, ymax = Q_meas + Q_abs_unc, Label = ID), size = 1) +
+  geom_line(data = Rating_rc1, aes(x = Stage_avg, y = Q_model, colour = smoothed)) +
+  geom_line(data = Rating_rc2, aes(x = Stage_avg, y = Q_model, colour = smoothed)) +
+  #geom_line(data = Rating_rc3, aes(x = Stage_avg, y = Q_model, colour = smoothed)) +
+  theme_bw() + xlab("Stage [cm]") + ylab("Discharge [m3/s]") + labs(title = "Loess fit - visual span selection"))
+
+```
+
+```{r choose_span, include = FALSE}
+## Enter chosen span width (span_a, span_b or span_c)
+Rating_rc1 <- Rating_rc1 %>% 
+  filter(smoothed == 'span_a') %>% 
+  select(Stage_avg, Q_model)
+Rating_rc2 <- Rating_rc2 %>% 
+  filter(smoothed == 'span_b') %>% 
+  select(Stage_avg, Q_model)
+#Rating_rc3 <- Rating_rc3 %>% 
+  #filter(smoothed == 'span_b') %>% 
+  #select(Stage_avg, Q_model)
+
+## Enter span width value
+Span_rc1 <- 0.3
+Span_rc2 <- 0.4
+#Span_rc3 <- 0.4
+
+```
+
+#### Extrapolation of curve to minimum and maximum stage {.tabset}
+
+Extrapolation is based on the highest and lowest measured stage values to date:
+
+| Stage [cm]| Date recorded |
+|:----------|:--------------|
+|   30.1    |   2018-08-24  |
+|   218     |   2017-10-16  |
+
+Shape/equation used for extrapolation: **power law equation**
+
+*Additional information*:  
+The power law equation was fitted on the measurements of Shift1 above an inflection point of 140 cm. It was asumed that the data of Shift 2 and Shift 3 (which lack high flow measurements) follow the same power law shape as Shift1, but offset to fit their data.
+For details see **data_input/extrapolation_determination.xlsx** 
+
+All extrapolated and estimated stage-discharge values can be found at   
+**data_input/extrap_values_rc1.csv**   
+**data_input/extrap_values_rc2.csv**    
+**data_input/extrap_values_rc3.csv** 
+
+```{r extrap, include= TRUE}
+## Estimate values for extrapolation (do separately fom this script) and write into 'extrap_values.csv' file (or 'extrap_values_rc1.csv', 'extrap_values_rc2.csv', etc.)
+
+## Import extrap_values from .csv file
+extrap_values_rc1 <- read_csv("data_input/extrap_values_rc1.csv")
+extrap_values_rc1 <- extrap_values_rc1 %>%
+  select(Stage_avg, Q_model)
+extrap_values_rc2 <- read_csv("data_input/extrap_values_rc2.csv")
+extrap_values_rc2 <- extrap_values_rc2 %>%
+  select(Stage_avg, Q_model)
+#extrap_values_rc3 <- read_csv("data_input/extrap_values_rc3.csv")
+#extrap_values_rc3 <- extrap_values_rc3 %>%
+  #select(Stage_avg, Q_model)
+
+# Add extrap_values to Ratings
+Rating_extrap_rc1 <- Rating_rc1 %>% 
+  select(Stage_avg, Q_model)
+Rating_extrap_rc1 <- bind_rows(Rating_extrap_rc1, extrap_values_rc1)
+Rating_extrap_rc2 <- Rating_rc2 %>% 
+  select(Stage_avg, Q_model)
+Rating_extrap_rc2 <- bind_rows(Rating_extrap_rc2, extrap_values_rc2)
+#Rating_extrap_rc3 <- Rating_rc3 %>% 
+  #select(Stage_avg, Q_model)
+#Rating_extrap_rc3 <- bind_rows(Rating_extrap_rc3, extrap_values_rc3)
+
+# Plot Q measurements and modelled Q as well as the extrapolated part of modelled Q
+ggplotly(ggplot() + 
+  geom_line(data = Rating_extrap_rc1, aes(x = Stage_avg, y = Q_model), color = "red") + 
+  geom_line(data = Rating_extrap_rc2, aes(x = Stage_avg, y = Q_model), color = "red") +
+  #geom_line(data = Rating_extrap_rc3, aes(x = Stage_avg, y = Q_model), color = "red") +
+  geom_point(data = Rating_extrap_rc1, aes(x = Stage_avg, y = Q_model), color = "red") + 
+  geom_point(data = Rating_extrap_rc2, aes(x = Stage_avg, y = Q_model), color = "red") +
+  #geom_point(data = Rating_extrap_rc3, aes(x = Stage_avg, y = Q_model), color = "red") +
+  geom_point(data = HQ_rc1, aes(x = Stage_avg, y = Q_meas, Label = ID)) +
+  geom_point(data = HQ_rc2, aes(x = Stage_avg, y = Q_meas, Label = ID)) +
+  #geom_point(data = HQ_rc3, aes(x = Stage_avg, y = Q_meas, Label = ID)) +
+  theme_bw() + xlab("Stage [cm]") + ylab("Discharge [m3/s]") + labs(title = "Estimated data points for extrapolation of curve"))
+
+```
+
+```{r interp1, include = FALSE}
+# Interpolate modelled Q values (including extrapolated part) for each mm of stage
+
+Rating_extrap_interp_rc1 <- interp1(Rating_extrap_rc1)
+names(Rating_extrap_interp_rc1) <- c("Stage_avg", "Q_model")
+Rating_extrap_interp_rc2 <- interp1(Rating_extrap_rc2)
+names(Rating_extrap_interp_rc2) <- c("Stage_avg", "Q_model")
+#Rating_extrap_interp_rc3 <- interp1(Rating_extrap_rc3)
+#names(Rating_extrap_interp_rc3) <- c("Stage_avg", "Q_model")
+
+```
+
+#### Confidence intervals
+
+* Uncertainties of Q measurements are adapted by including stage uncertainty
+* 500 datasets are created with randomly chosen Q_meas, Q + unc or Q - unc for each stage value
+* 500 loess regressions are run using these randomized datasets
+* 95% CI of 500 regression results are calculated
+* Confidence intervals of the extrapolated part of the rating curve are estimated to be 5% of modelled discharge.
+
+```{r CI, include = FALSE}
+
+## Determine number of loess regressions for CI plotting - Coxon et al. (2015) suggests 500
+n <- 500
+# Calculate Q_meas uncertainty taking into account uncertainty in stage and create dataframe with Stage_avg, Q_meas and Q_H_abs_unc
+HQ_unc_rc1 <- HQ_unc(HQ_rc1, Rating_rc1, Rating_extrap_interp_rc1)
+HQ_unc_rc2 <- HQ_unc(HQ_rc2, Rating_rc2, Rating_extrap_interp_rc2)
+#HQ_unc_rc3 <- HQ_unc(HQ_rc3, Rating_rc3, Rating_extrap_interp_rc3)
+
+# Prepare n number of H-Q datasets, sampled from Q, Q_max, Q_min, H, H_max, H_min
+CI_model_input_rc1 <- CI_model_input(HQ_unc_rc1, n, HQ_rc1)
+CI_model_input_rc2 <- CI_model_input(HQ_unc_rc2, n, HQ_rc2)
+#CI_model_input_rc3 <- CI_model_input(HQ_unc_rc3, n, HQ_rc3)
+
+# Define Expand value (Expansion of qmixnorm() in CI.R). Default is 1. If CI.R produces NaN values, decrease value. Choose largest number that does not produce NaN values.
+Expand_rc1 <- 1
+Expand_rc2 <- 1
+#Expand_rc3 <- 1
+
+# Calculate 95% CI
+CI_rc1 <- CI(CI_model_input_rc1,n,Span_rc1,Expand_rc1)
+CI_rc2 <- CI(CI_model_input_rc2,n,Span_rc2,Expand_rc2)
+#CI_rc3 <- CI(CI_model_input_rc3,n,Span_rc3,Expand_rc3)
+
+# Create dataframe with Stage_avg, Q_model, Max_CI and Min_CI
+RatingCI_rc1 <- bind_cols(Rating_rc1, CI_rc1)
+RatingCI_rc2 <- bind_cols(Rating_rc2, CI_rc2)
+#RatingCI_rc3 <- bind_cols(Rating_rc3, CI_rc3)
+
+write_csv(RatingCI_rc1, "data_output/RatingCI_rc1.csv")
+write_csv(RatingCI_rc2, "data_output/RatingCI_rc2.csv")
+#write_csv(RatingCI_rc3, "data_output/RatingCI_rc3.csv")
+
+```
+
+```{r extrap CI, include = FALSE}
+## Add estimates for Max_CI and Min_CI of the extrapolated parts of the rating curve to the extrap_values.csv file (5% of modelled Q).
+extrap_values_rc1 <- read_csv("data_input/extrap_values_rc1.csv")
+extrap_values_rc2 <- read_csv("data_input/extrap_values_rc2.csv")
+#extrap_values_rc3 <- read_csv("data_input/extrap_values_rc3.csv")
+
+RatingCI_extrap_rc1 <- bind_rows(RatingCI_rc1, extrap_values_rc1)
+RatingCI_extrap_rc2 <- bind_rows(RatingCI_rc2, extrap_values_rc2)
+#RatingCI_extrap_rc3 <- bind_rows(RatingCI_rc3, extrap_values_rc3)
+
+```
+
+```{r interp2, include = FALSE}
+# Interpolate values within measurement points
+RatingCI_extrap_interp_rc1 <- interp2(RatingCI_extrap_rc1)
+RatingCI_extrap_interp_rc2 <- interp2(RatingCI_extrap_rc2)
+#RatingCI_extrap_interp_rc3 <- interp2(RatingCI_extrap_rc3)
+
+```
+
+#### Final rating curve
+
+Results are written to: __data_output/WTS703ratingcurve_v4.csv__
+
+```{r finish, include = TRUE}
+
+# Combine dataframes of rc1, rc2 and rc3
+RatingCI_extrap_interp_rc1['Rating'] = 1
+RatingCI_extrap_interp_rc2['Rating'] = 2
+#RatingCI_extrap_interp_rc3['Rating'] = 3
+ratingcurve <- bind_rows(RatingCI_extrap_interp_rc1, RatingCI_extrap_interp_rc2)
+#ratingcurve <- bind_rows(ratingcurve, RatingCI_extrap_interp_rc3)
+
+## Adapt watershed name and version number and write data
+write_csv(ratingcurve,"data_output/WTS703ratingcurve_v4.csv")
+write_csv(HQ,"data_output/WTS703stagedischarge_v4.csv")
+
+# Re-organizing dataframe for plotting
+Q_meas_rc1 <- cbind(HQ_rc1$Stage_avg,HQ_unc_rc1)
+colnames(Q_meas_rc1)[1] <- "Stage_avg"
+Q_meas_rc2 <- cbind(HQ_rc2$Stage_avg,HQ_unc_rc2)
+colnames(Q_meas_rc2)[1] <- "Stage_avg"
+#Q_meas_rc3 <- cbind(HQ_rc3$Stage_avg,HQ_unc_rc3)
+#colnames(Q_meas_rc3)[1] <- "Stage_avg"
+
+## Plot rating curves displaying CI and measurement uncertainties. Adapt plot title.
+ggplotly(ggplot() + 
+  geom_ribbon(data = RatingCI_extrap_interp_rc1, aes(x = Stage_avg, ymin = Min_CI, ymax = Max_CI), fill = "grey80") +
+  geom_pointrange(data = Q_meas_rc1, aes(x = Stage_avg, y = Q_meas, ymin = Q_min, ymax = Q_max), size = 1) +
+  geom_line(data = RatingCI_extrap_interp_rc1, aes(x = Stage_avg, y = Q_model), colour = "grey5", linetype = 3) + 
+  theme_bw() + xlab("Stage [cm]") + ylab("Discharge [m3/s]") + labs(title = "WTS703 - Rating curve 1"))
+
+ggplotly(ggplot() + 
+  geom_ribbon(data = RatingCI_extrap_interp_rc2, aes(x = Stage_avg, ymin = Min_CI, ymax = Max_CI), fill = "grey90") +
+  geom_pointrange(data = Q_meas_rc2, aes(x = Stage_avg, y = Q_meas, ymin = Q_min, ymax = Q_max), size = 1) +
+  geom_line(data = RatingCI_extrap_interp_rc2, aes(x = Stage_avg, y = Q_model), colour = "grey5") +
+  theme_bw() + xlab("Stage [cm]") + ylab("Discharge [m3/s]") + labs(title = "WTS703 - Rating curve 2"))
+
+#ggplotly(ggplot() + 
+  #geom_ribbon(data = RatingCI_extrap_interp_rc3, aes(x = Stage_avg, ymin = Min_CI, ymax = Max_CI), fill = "grey90") +
+  #geom_pointrange(data = Q_meas_rc3, aes(x = Stage_avg, y = Q_meas, ymin = Q_min, ymax = Q_max), size = 1) +
+  #geom_line(data = RatingCI_extrap_interp_rc3, aes(x = Stage_avg, y = Q_model), colour = "grey5") +
+  #theme_bw() + xlab("Stage [cm]") + ylab("Discharge [m3/s]") + labs(title = "WTS703 - Rating curve 3"))
+
+# Plot rating curve displaying all shifts
+ggplotly(ggplot() + 
+  geom_ribbon(data = RatingCI_extrap_interp_rc1, aes(x = Stage_avg, ymin = Min_CI, ymax = Max_CI), fill = "grey70") +
+  geom_ribbon(data = RatingCI_extrap_interp_rc2, aes(x = Stage_avg, ymin = Min_CI, ymax = Max_CI), fill = "grey80") +
+  #geom_ribbon(data = RatingCI_extrap_interp_rc3, aes(x = Stage_avg, ymin = Min_CI, ymax = Max_CI), fill = "grey90") +
+  geom_pointrange(data = Q_meas_rc1, aes(x = Stage_avg, y = Q_meas, ymin = Q_min, ymax = Q_max), size = 1) +
+  geom_pointrange(data = Q_meas_rc2, aes(x = Stage_avg, y = Q_meas, ymin = Q_min, ymax = Q_max), size = 1) +
+  #geom_pointrange(data = Q_meas_rc3, aes(x = Stage_avg, y = Q_meas, ymin = Q_min, ymax = Q_max), size = 1) +
+  geom_line(data = RatingCI_extrap_interp_rc1, aes(x = Stage_avg, y = Q_model), colour = "grey5", linetype = 3) + 
+  geom_line(data = RatingCI_extrap_interp_rc2, aes(x = Stage_avg, y = Q_model), colour = "grey5") +
+  #geom_line(data = RatingCI_extrap_interp_rc3, aes(x = Stage_avg, y = Q_model), colour = "grey5") +
+  theme_bw() + xlab("Stage [cm]") + ylab("Discharge [m3/s]") + labs(title = "WTS703 - Rating curve")) 
+
+```
+

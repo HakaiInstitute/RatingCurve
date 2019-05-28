@@ -1,0 +1,219 @@
+---
+title: "Final rating curve"
+author: "Maartje Korver"
+date: "May 13, 2019"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+# Explanation of code
+## Action required
+
+# Install and/or load packages
+#install.packages('ggplot2')
+#install.packages('plotly')
+#install.packages('tidyverse')
+#install.packages('stats')
+#install.packages('googlesheets')
+#install.packages('readr')
+#install.packages('KScorrect')
+
+library(ggplot2)
+library(plotly)
+library(tidyverse)
+library(stats)
+library(googlesheets)
+library(readr)
+library(KScorrect)
+
+## Set working directory
+setwd("C:/Users/Watersheds/Documents/RProjects/Rating_curves/Test")
+
+# Read functions
+source("selectspan.R")
+source("interp1.R")
+source("interp2.R")
+source("HQ_unc.R")
+source("CI_model_input.R")
+source("CI.R")
+
+```
+
+```{r load_data, include = FALSE}
+
+## Load stage-discharge data from googlesheet. Adapt sheet title (gs_title) and tab name (gs_read).
+HQ <- gs_title('Metadata Rating curve 626')
+HQ <- gs_read(HQ, ws = "Rating curve v4")
+
+# Add column with absolute Q uncertainty. 
+# Filter measurements that are indicated as 'Y' under 'Final_rating_curve'
+HQ <- HQ %>% 
+  mutate(Q_abs_unc = Q_rel_unc/100 * Q_meas) %>% 
+  filter(Final_rating_curve == 'Y')
+
+```
+
+### Watershed 626 -- version 4
+
+_This document outlines the final rating curve plotting process, the decisions that were made and the results_
+
+#### Conclusions drawn from Stage-discharge data assessment
+
+**Were data points omitted?**  
+No new measurements were omitted from this rating curve.
+Two high flow measurements taken 2016-11-08 still plot far off the curve and are not included.
+
+**Other observations/comments**  
+Slight shift down can be observed in latest data. Not enough to plot a shifted curve.
+
+#### Loess fit with visual span width selection
+
+Select the span width that does not overfit (span width too small) nor underfit (span width too large) the data.
+
+Span_a = 0.14  
+Span_b = 0.15  
+Span_c = 0.16  
+
+Span width chosen = **span_b**
+
+```{r define_span1, include = TRUE}
+
+## Define potential span widths
+Rating <- selectspan(HQ,0.14,0.15,0.16)
+
+ggplotly(ggplot() +
+  geom_pointrange(data = HQ, aes(x = Stage_avg, y = Q_meas, ymin = Q_meas - Q_abs_unc, ymax = Q_meas + Q_abs_unc, Label = ID), size = 1) +
+  geom_line(data = Rating, aes(x = Stage_avg, y = Q_model, colour = smoothed)) + 
+  theme_bw() + xlab("Stage [cm]") + ylab("Discharge [m3/s]") + labs(title = "Loess fit - visual span selection"))
+
+```
+
+```{r choose_span, include = FALSE}
+## Enter chosen span width (span_a, span_b or span_c)
+Rating <- Rating %>% 
+  filter(smoothed == 'span_b') %>% 
+  select(Stage_avg, Q_model)
+
+## Enter span width value
+Span <- 0.15
+
+```
+
+#### Extrapolation of curve to minimum and maximum stage {.tabset}
+
+Extrapolation is based on the highest and lowest measured stage values to date:
+
+| Stage [cm]| Date recorded |
+|:----------|:--------------|
+|   17.3    |   2018-08-24  |
+|   204     |   2018-12-29  |
+
+Shape/equation used for extrapolation: **power law equation**
+
+*Additional information*:  
+The extrapolation was based on a power law equation that was plotted on all measurements above an inflection point of 123 cm.
+For details see **data_input/extrapolation_determination.xlsx** 
+
+All extrapolated and estimated stage-discharge values can be found at   **data_input/extrap_values.csv**  
+
+```{r extrap, include = TRUE}
+## Estimate values for extrapolation (do separately fom this script) and write into 'extrap_values.csv' file.
+
+## Import extrap_values from .csv file
+extrap_values <- read_csv("data_input/extrap_values.csv")
+extrap_values <- extrap_values %>%
+  select(Stage_avg, Q_model)
+
+# Add extrap_values to Rating
+Rating_extrap <- Rating %>% 
+  select(Stage_avg, Q_model)
+Rating_extrap <- bind_rows(Rating_extrap, extrap_values)
+
+# Plot Q measurements and modelled Q as well as the extrapolated part of modelled Q
+ggplotly(ggplot() + 
+  geom_line(data = Rating_extrap, aes(x = Stage_avg, y = Q_model), color = "red") + 
+  geom_point(data = Rating_extrap, aes(x = Stage_avg, y = Q_model), color = "red") + 
+  geom_point(data = HQ, aes(x = Stage_avg, y = Q_meas, Label = ID)) + 
+  theme_bw() + xlab("Stage [cm]") + ylab("Discharge [m3/s]") + labs(title = "Estimated data points for extrapolation of curve"))
+
+```
+
+```{r interp1, include = FALSE}
+
+# Interpolate modelled Q values (including extrapolated part) for each mm of stage
+Rating_extrap_interp <- interp1(Rating_extrap)
+names(Rating_extrap_interp) <- c("Stage_avg", "Q_model")
+
+```
+
+#### Confidence intervals
+
+* Uncertainties of Q measurements are adapted by including stage uncertainty
+* 500 datasets are created with randomly chosen Q_meas, Q + unc or Q - unc for each stage value
+* 500 loess regressions are run using these randomized datasets
+* 95% CI of 500 regression results are calculated
+* Confidence intervals of the extrapolated part of the rating curve are estimated to be 5% of modelled discharge.
+
+```{r CI, include = FALSE}
+
+## Determine number of loess regressions for CI plotting - Coxon et al. (2015) suggests 500
+n <- 500
+
+# Calculate Q_meas uncertainty taking into account uncertainty in stage and create dataframe with Stage_avg, Q_meas and Q_H_abs_unc
+HQ_unc <- HQ_unc(HQ, Rating, Rating_extrap_interp)
+
+# Prepare n number of H-Q datasets, sampled from Q, Q_max, Q_min, H, H_max, H_min
+CI_model_input <- CI_model_input(HQ_unc, n, HQ)
+
+# Define Expand value (Expansion of qmixnorm() in CI.R). Default is 1. If CI.R produces NaN values, decrease value. Choose largest number that does not produce NaN values.
+Expand <- 1
+
+# Calculate 95% CI
+CI <- CI(CI_model_input,n,Span,Expand)
+
+# Create dataframe with Stage_avg, Q_model, Max_CI and Min_CI
+RatingCI <- bind_cols(Rating, CI)
+
+write_csv(RatingCI, "data_output/RatingCI.csv")
+
+```
+
+```{r extrap CI, include = FALSE}
+
+## Add estimates for Max_CI and Min_CI of the extrapolated parts of the rating curve to the extrap_values.csv file (5% of modelled Q).
+extrap_values <- read_csv("data_input/extrap_values.csv")
+
+RatingCI_extrap <- bind_rows(RatingCI, extrap_values)
+
+```
+
+```{r interp2, include = FALSE}
+# Interpolate values within measurement points
+RatingCI_extrap_interp <- interp2(RatingCI_extrap)
+
+```
+
+#### Final rating curve
+
+Results are written to: __data_output/WTS626ratingcurve_v4.csv__
+
+```{r finish, include=TRUE}
+
+## Adapt watershed name and version number and write data
+write_csv(RatingCI_extrap_interp,"data_output/WTS626ratingcurve_v4.csv")
+write_csv(HQ,"data_output/WTS626stagedischarge_v4.csv")
+
+# Re-organizing dataframe for plotting
+Q_meas <- cbind(HQ$Stage_avg,HQ_unc)
+colnames(Q_meas)[1] <- "Stage_avg"
+
+## Plot rating curve displaying CI and measurement uncertainties. Adapt plot title.
+ggplotly(ggplot() + 
+  geom_ribbon(data = RatingCI_extrap_interp, aes(x = Stage_avg, ymin = Min_CI, ymax = Max_CI), fill = "grey") +
+  geom_pointrange(data = Q_meas, aes(x = Stage_avg, y = Q_meas, ymin = Q_min, ymax = Q_max), size = 1) +
+  geom_line(data = RatingCI_extrap_interp, aes(x = Stage_avg, y = Q_model), colour = "#333333") +
+  theme_bw() + xlab("Stage [cm]") + ylab("Discharge [m3/s]") + labs(title = "WTS626 - Rating curve"))
+
+```
